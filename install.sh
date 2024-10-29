@@ -10,10 +10,8 @@ fi
 echo "Đang cài đặt các gói cần thiết..."
 yum clean all
 yum makecache
-yum groups mark convert
 yum -y install epel-release
-yum -y groupinstall "Development tools"
-yum -y install net-tools tar zip curl wget
+yum -y install net-tools tar zip curl wget gcc make
 
 # Lấy tên giao diện mạng
 INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
@@ -23,12 +21,15 @@ echo "Giao diện mạng của bạn là: $INTERFACE"
 IP4=$(ip -4 addr show dev $INTERFACE | grep inet | awk '{print $2}' | cut -d'/' -f1)
 echo "Địa chỉ IPv4 của bạn là: $IP4"
 
+# Kiểm tra địa chỉ IP công cộng
+if [[ $IP4 == 192.168.* || $IP4 == 10.* || $IP4 == 172.16.* || $IP4 == 172.31.* ]]; then
+    echo "Cảnh báo: Địa chỉ IPv4 của bạn là địa chỉ IP nội bộ. Các proxy có thể không truy cập được từ bên ngoài."
+fi
+
 # Lấy địa chỉ IPv6
 IP6=$(ip -6 addr show dev $INTERFACE | grep -v "fe80" | grep "scope global" | awk '{print $2}' | cut -d'/' -f1 | head -n1)
 if [ -z "$IP6" ]; then
     echo "Không tìm thấy địa chỉ IPv6 trên giao diện $INTERFACE."
-    # Nếu không có IPv6, bạn có thể chọn tiếp tục chỉ với IPv4 hoặc thoát.
-    # Ở đây, mình sẽ tiếp tục chỉ với IPv4.
     USE_IPV6=false
 else
     echo "Địa chỉ IPv6 của bạn là: $IP6"
@@ -57,7 +58,8 @@ gen64() {
 install_3proxy() {
     echo "Đang cài đặt 3proxy..."
     URL="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
-    wget -qO- $URL | tar -xzf-
+    wget $URL -O 3proxy-0.9.4.tar.gz
+    tar -xzf 3proxy-0.9.4.tar.gz
     cd 3proxy-0.9.4
     make
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
@@ -85,7 +87,7 @@ EOF
 }
 
 gen_3proxy() {
-    cat <<EOF
+    cat <<EOF >/usr/local/etc/3proxy/3proxy.cfg
 daemon
 maxconn 1000
 nscache 65536
@@ -96,12 +98,18 @@ flush
 auth strong
 
 users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
-
-$(awk -F "/" '{print "auth strong\n" \
-"allow " $1 "\n" \
-"proxy -n -a -p" $4 " -i" $3 $(if [ "$USE_IPV6" = true ]; then echo " -e"$5; fi) "\n" \
-"flush\n"}' ${WORKDATA})
 EOF
+
+    while IFS="/" read -r username password ip4 port ip6; do
+        echo "auth strong" >>/usr/local/etc/3proxy/3proxy.cfg
+        echo "allow $username" >>/usr/local/etc/3proxy/3proxy.cfg
+        if [ "$USE_IPV6" = true ]; then
+            echo "proxy -6 -n -a -p$port -i$ip4 -e$ip6" >>/usr/local/etc/3proxy/3proxy.cfg
+        else
+            echo "proxy -n -a -p$port -i$ip4" >>/usr/local/etc/3proxy/3proxy.cfg
+        fi
+        echo "flush" >>/usr/local/etc/3proxy/3proxy.cfg
+    done < ${WORKDATA}
 }
 
 gen_proxy_file_for_user() {
@@ -177,7 +185,7 @@ fi
 
 install_3proxy
 
-gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
+gen_3proxy
 
 # Cập nhật /etc/rc.d/rc.local để chạy các script khởi động
 cat > /etc/rc.d/rc.local <<EOF
