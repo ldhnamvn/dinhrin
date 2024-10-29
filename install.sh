@@ -39,27 +39,9 @@ yum makecache
 
 # Cài đặt các gói cần thiết
 echo "Đang cài đặt các gói cần thiết..."
-yum groups mark convert
 yum -y install epel-release
 yum -y groupinstall "Development Tools"
-yum -y install net-tools tar zip curl wget
-
-# Lấy tên giao diện mạng
-INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-echo "Giao diện mạng của bạn là: $INTERFACE"
-
-# Lấy địa chỉ IPv4
-IP4=$(ip -4 addr show dev $INTERFACE | grep inet | awk '{print $2}' | cut -d'/' -f1)
-
-# Lấy địa chỉ IPv6
-IP6=$(ip -6 addr show dev $INTERFACE scope global | grep inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n1)
-echo "Địa chỉ IPv6 của bạn là: $IP6"
-
-# Kiểm tra nếu IP6 trống
-if [ -z "$IP6" ]; then
-    echo "Không thể lấy địa chỉ IPv6. Vui lòng kiểm tra cấu hình IPv6 của bạn."
-    exit 1
-fi
+yum -y install net-tools tar zip
 
 # Khai báo các hàm cần thiết
 random() {
@@ -67,23 +49,25 @@ random() {
     echo
 }
 
+array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-    echo "$1"
+    ip64() {
+        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
+    }
+    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
 
 install_3proxy() {
     echo "Đang cài đặt 3proxy..."
-    URL="https://github.com/z3APA3A/3proxy/archive/refs/tags/0.8.13.tar.gz"
+    URL="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
     wget -qO- $URL | tar -xzf-
     cd 3proxy-0.8.13
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp scripts/3proxy.cfg /usr/local/etc/3proxy/
-    # Sao chép tệp unit systemd cho 3proxy
-    cp scripts/systemd/3proxy.service /etc/systemd/system/3proxy.service
-    systemctl daemon-reload
-    systemctl enable 3proxy.service
+    cp scripts/init.d/3proxy /etc/init.d/3proxy
+    chmod +x /etc/init.d/3proxy
+    chkconfig 3proxy on
     cd $WORKDIR
 }
 
@@ -125,18 +109,20 @@ upload_proxy() {
 
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$IP6"
+        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
     done
 }
 
 gen_iptables() {
     cat <<EOF
-$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -j ACCEPT"}' ${WORKDATA})
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA})
 EOF
 }
 
 gen_ifconfig() {
-    echo "# Không cần thêm địa chỉ IPv6 mới"
+    cat <<EOF
+$(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
+EOF
 }
 
 # Thiết lập thư mục làm việc
@@ -151,6 +137,12 @@ if [ ! -f /etc/rc.local ]; then
     chmod +x /etc/rc.local
 fi
 
+# Lấy địa chỉ IP4 và IP6
+IP4=$(curl -4 -s icanhazip.com)
+IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+
+echo "IP nội bộ = ${IP4}. Subnet ngoài cho IP6 = ${IP6}"
+
 # Yêu cầu người dùng nhập số lượng proxy cần tạo
 echo "Bạn muốn tạo bao nhiêu proxy? Ví dụ 500"
 read COUNT
@@ -164,22 +156,18 @@ gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
 chmod +x ${WORKDIR}/boot_*.sh
 
-install_3proxy
-
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
 # Cập nhật /etc/rc.local để chạy các script khởi động
-cat > /etc/rc.local <<EOF
-#!/bin/bash
+cat >>/etc/rc.local <<EOF
 bash ${WORKDIR}/boot_iptables.sh
-# Không cần chạy boot_ifconfig.sh vì không thêm địa chỉ IPv6 mới
+bash ${WORKDIR}/boot_ifconfig.sh
 ulimit -n 10048
-systemctl start 3proxy.service
+service 3proxy start
 EOF
 
-chmod +x /etc/rc.local
-systemctl enable rc-local
-systemctl start rc-local
+# Chạy /etc/rc.local ngay lập tức
+bash /etc/rc.local
 
 # Tạo tệp proxy cho người dùng
 gen_proxy_file_for_user
