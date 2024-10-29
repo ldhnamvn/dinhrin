@@ -1,27 +1,86 @@
-#!/bin/sh
+#!/bin/bash
+
+# Kiểm tra quyền root
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Bạn phải chạy script này với quyền root."
+    exit 1
+fi
+
+# Cài đặt các gói cần thiết
+echo "Đang cài đặt các gói cần thiết..."
+yum clean all
+yum makecache
+yum groups mark convert
+yum -y install epel-release
+yum -y groupinstall "Development tools"
+yum -y install net-tools tar zip curl wget
+
+# Lấy tên giao diện mạng
+INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
+echo "Giao diện mạng của bạn là: $INTERFACE"
+
+# Lấy địa chỉ IPv4
+IP4=$(ip -4 addr show dev $INTERFACE | grep inet | awk '{print $2}' | cut -d'/' -f1)
+echo "Địa chỉ IPv4 của bạn là: $IP4"
+
+# Lấy địa chỉ IPv6
+IP6=$(ip -6 addr show dev $INTERFACE | grep -v "fe80" | grep "scope global" | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+if [ -z "$IP6" ]; then
+    echo "Không tìm thấy địa chỉ IPv6 trên giao diện $INTERFACE."
+    # Nếu không có IPv6, bạn có thể chọn tiếp tục chỉ với IPv4 hoặc thoát.
+    # Ở đây, mình sẽ tiếp tục chỉ với IPv4.
+    USE_IPV6=false
+else
+    echo "Địa chỉ IPv6 của bạn là: $IP6"
+    IP6_PREFIX=$(echo $IP6 | cut -d':' -f1-4)
+    echo "Tiền tố IPv6 của bạn là: $IP6_PREFIX"
+    USE_IPV6=true
+fi
+
+# Khai báo các hàm cần thiết
 random() {
-	tr </dev/urandom -dc A-Za-z0-9 | head -c5
-	echo
+    tr </dev/urandom -dc A-Za-z0-9 | head -c5
+    echo
 }
 
-array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-	ip64() {
-		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-	}
-	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+    if [ "$USE_IPV6" = true ]; then
+        ip_suffix() {
+            printf "%x:%x:%x:%x" $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536))
+        }
+        echo "$IP6_PREFIX:$(ip_suffix)"
+    else
+        echo ""
+    fi
 }
+
 install_3proxy() {
-    echo "installing 3proxy"
+    echo "Đang cài đặt 3proxy..."
     URL="https://github.com/3proxy/3proxy/archive/refs/tags/0.9.4.tar.gz"
-    wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-3proxy-0.8.6
-    make -f Makefile.Linux
+    wget -qO- $URL | tar -xzf-
+    cd 3proxy-0.9.4
+    make
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
-    chmod +x /etc/init.d/3proxy
-    chkconfig 3proxy on
+    cp cfg/3proxy.cfg.sample /usr/local/etc/3proxy/3proxy.cfg
+    # Tạo tệp unit systemd cho 3proxy
+    cat <<EOF >/etc/systemd/system/3proxy.service
+[Unit]
+Description=3proxy Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+ExecReload=/bin/kill -HUP \$MAINPID
+KillMode=process
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable 3proxy.service
     cd $WORKDIR
 }
 
@@ -31,8 +90,8 @@ daemon
 maxconn 1000
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
-setgid 65535
-setuid 65535
+setgid $(id -g nobody)
+setuid $(id -u nobody)
 flush
 auth strong
 
@@ -40,7 +99,7 @@ users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
 
 $(awk -F "/" '{print "auth strong\n" \
 "allow " $1 "\n" \
-"proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
+"proxy -n -a -p" $4 " -i" $3 $(if [ "$USE_IPV6" = true ]; then echo " -e"$5; fi) "\n" \
 "flush\n"}' ${WORKDATA})
 EOF
 }
@@ -56,65 +115,85 @@ upload_proxy() {
     zip --password $PASS proxy.zip proxy.txt
     URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
 
-    echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
-    echo "Download zip archive from: ${URL}"
-    echo "Password: ${PASS}"
-
+    echo "Proxy đã sẵn sàng! Định dạng IP:PORT:LOGIN:PASS"
+    echo "Tải tệp zip từ: ${URL}"
+    echo "Mật khẩu: ${PASS}"
 }
+
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+        if [ "$USE_IPV6" = true ]; then
+            echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64)"
+        else
+            echo "usr$(random)/pass$(random)/$IP4/$port"
+        fi
     done
 }
 
 gen_iptables() {
     cat <<EOF
-    $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -j ACCEPT"}' ${WORKDATA})
 EOF
 }
 
 gen_ifconfig() {
-    cat <<EOF
-$(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
+    if [ "$USE_IPV6" = true ]; then
+        cat <<EOF
+$(awk -F "/" -v interface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " interface}' ${WORKDATA})
 EOF
+    else
+        echo "# Không cần cấu hình IPv6"
+    fi
 }
-echo "installing apps"
-yum -y install gcc net-tools bsdtar zip >/dev/null
 
-install_3proxy
-
-echo "working folder = /home/proxy-installer"
+# Thiết lập thư mục làm việc
 WORKDIR="/home/proxy-installer"
+echo "Thư mục làm việc = ${WORKDIR}"
 WORKDATA="${WORKDIR}/data.txt"
-mkdir $WORKDIR && cd $_
+mkdir -p $WORKDIR && cd $WORKDIR
 
-IP4=$(curl -4 -s icanhazip.com)
-IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+# Đảm bảo tệp /etc/rc.d/rc.local tồn tại và có quyền thực thi
+if [ ! -f /etc/rc.d/rc.local ]; then
+    touch /etc/rc.d/rc.local
+    chmod +x /etc/rc.d/rc.local
+fi
 
-echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
-
-echo "How many proxy do you want to create? Example 500"
+# Yêu cầu người dùng nhập số lượng proxy cần tạo
+echo "Bạn muốn tạo bao nhiêu proxy? Ví dụ 500"
 read COUNT
 
 FIRST_PORT=10000
-LAST_PORT=$(($FIRST_PORT + $COUNT))
+LAST_PORT=$(($FIRST_PORT + $COUNT - 1))
 
-gen_data >$WORKDIR/data.txt
+# Gọi các hàm để tạo dữ liệu và cấu hình
+gen_data >$WORKDATA
 gen_iptables >$WORKDIR/boot_iptables.sh
-gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x ${WORKDIR}/boot_*.sh /etc/rc.local
+chmod +x ${WORKDIR}/boot_*.sh
+
+if [ "$USE_IPV6" = true ]; then
+    gen_ifconfig >$WORKDIR/boot_ifconfig.sh
+    chmod +x $WORKDIR/boot_ifconfig.sh
+fi
+
+install_3proxy
 
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-cat >>/etc/rc.local <<EOF
+# Cập nhật /etc/rc.d/rc.local để chạy các script khởi động
+cat > /etc/rc.d/rc.local <<EOF
+#!/bin/bash
 bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
+$(if [ "$USE_IPV6" = true ]; then echo "bash ${WORKDIR}/boot_ifconfig.sh"; fi)
 ulimit -n 10048
-service 3proxy start
+systemctl start 3proxy.service
 EOF
 
-bash /etc/rc.local
+chmod +x /etc/rc.d/rc.local
+systemctl enable rc-local
+systemctl start rc-local
 
+# Tạo tệp proxy cho người dùng
 gen_proxy_file_for_user
 
+# Tải lên tệp proxy và hiển thị thông tin
 upload_proxy
