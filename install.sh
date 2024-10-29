@@ -39,9 +39,10 @@ yum makecache
 
 # Cài đặt các gói cần thiết
 echo "Đang cài đặt các gói cần thiết..."
+yum groups mark convert
 yum -y install epel-release
 yum -y groupinstall "Development Tools"
-yum -y install net-tools tar zip curl
+yum -y install net-tools tar zip curl wget
 
 # Lấy tên giao diện mạng
 INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
@@ -49,9 +50,10 @@ echo "Giao diện mạng của bạn là: $INTERFACE"
 
 # Lấy địa chỉ IPv4
 IP4=$(ip -4 addr show dev $INTERFACE | grep inet | awk '{print $2}' | cut -d'/' -f1)
-# Lấy tiền tố IPv6
-IP6=$(ip -6 addr show dev $INTERFACE scope global | grep inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n1 | cut -d':' -f1-4)
-echo "Tiền tố IPv6 của bạn là: $IP6"
+
+# Lấy địa chỉ IPv6
+IP6=$(ip -6 addr show dev $INTERFACE scope global | grep inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+echo "Địa chỉ IPv6 của bạn là: $IP6"
 
 # Kiểm tra nếu IP6 trống
 if [ -z "$IP6" ]; then
@@ -65,12 +67,8 @@ random() {
     echo
 }
 
-array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-    ip64() {
-        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-    }
-    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+    echo "$1"
 }
 
 install_3proxy() {
@@ -127,7 +125,7 @@ upload_proxy() {
 
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+        echo "usr$(random)/pass$(random)/$IP4/$port/$IP6"
     done
 }
 
@@ -138,9 +136,7 @@ EOF
 }
 
 gen_ifconfig() {
-    cat <<EOF
-$(awk -F "/" -v interface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " interface}' ${WORKDATA})
-EOF
+    echo "# Không cần thêm địa chỉ IPv6 mới"
 }
 
 # Thiết lập thư mục làm việc
@@ -168,13 +164,15 @@ gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
 chmod +x ${WORKDIR}/boot_*.sh
 
+install_3proxy
+
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
 # Cập nhật /etc/rc.local để chạy các script khởi động
 cat > /etc/rc.local <<EOF
 #!/bin/bash
 bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
+# Không cần chạy boot_ifconfig.sh vì không thêm địa chỉ IPv6 mới
 ulimit -n 10048
 systemctl start 3proxy.service
 EOF
