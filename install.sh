@@ -1,25 +1,31 @@
 #!/bin/sh
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Bạn phải chạy script này với quyền root."
+    exit 1
+fi
+
 random() {
-	tr </dev/urandom -dc A-Za-z0-9 | head -c5
-	echo
+    tr </dev/urandom -dc A-Za-z0-9 | head -c5
+    echo
 }
 
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
 gen64() {
-	ip64() {
-		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-	}
-	echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
+    ip64() {
+        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
+    }
+    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
 }
 install_3proxy() {
-    echo "installing 3proxy"
-    URL="https://raw.githubusercontent.com/ldhnamvn/dinhrin/refs/heads/main/3proxy-3proxy-0.8.6.tar.gz"
-    wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-3proxy-0.8.6
+    echo "Đang cài đặt 3proxy"
+    URL="https://github.com/z3APA3A/3proxy/archive/refs/tags/0.8.13.tar.gz"
+    wget -qO- $URL | tar -xzf-
+    cd 3proxy-0.8.13
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
+    cp scripts/init.d/3proxy /etc/init.d/3proxy
     chmod +x /etc/init.d/3proxy
     chkconfig 3proxy on
     cd $WORKDIR
@@ -56,9 +62,9 @@ upload_proxy() {
     zip --password $PASS proxy.zip proxy.txt
     URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
 
-    echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
-    echo "Download zip archive from: ${URL}"
-    echo "Password: ${PASS}"
+    echo "Proxy đã sẵn sàng! Định dạng IP:PORT:LOGIN:PASS"
+    echo "Tải tệp zip từ: ${URL}"
+    echo "Mật khẩu: ${PASS}"
 
 }
 gen_data() {
@@ -69,7 +75,7 @@ gen_data() {
 
 gen_iptables() {
     cat <<EOF
-    $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA})
 EOF
 }
 
@@ -78,22 +84,27 @@ gen_ifconfig() {
 $(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
 EOF
 }
-echo "installing apps"
-yum -y install gcc net-tools bsdtar zip >/dev/null
+
+echo "Đang cài đặt các ứng dụng cần thiết"
+yum -y install epel-release
+yum -y install gcc net-tools tar make zip >/dev/null
 
 install_3proxy
 
-echo "working folder = /home/proxy-installer"
 WORKDIR="/home/proxy-installer"
+echo "Thư mục làm việc = ${WORKDIR}"
 WORKDATA="${WORKDIR}/data.txt"
-mkdir $WORKDIR && cd $_
+mkdir -p $WORKDIR && cd $WORKDIR
+
+touch /etc/rc.local
+chmod +x /etc/rc.local
 
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 
-echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
+echo "IP nội bộ = ${IP4}. Subnet ngoài cho ip6 = ${IP6}"
 
-echo "How many proxy do you want to create? Example 500"
+echo "Bạn muốn tạo bao nhiêu proxy? Ví dụ 500"
 read COUNT
 
 FIRST_PORT=10000
@@ -102,7 +113,7 @@ LAST_PORT=$(($FIRST_PORT + $COUNT))
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x ${WORKDIR}/boot_*.sh /etc/rc.local
+chmod +x ${WORKDIR}/boot_*.sh
 
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
