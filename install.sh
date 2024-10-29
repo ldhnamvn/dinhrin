@@ -41,7 +41,10 @@ yum makecache
 echo "Đang cài đặt các gói cần thiết..."
 yum -y install epel-release
 yum -y groupinstall "Development Tools"
-yum -y install net-tools tar zip
+yum -y install net-tools tar zip curl
+
+# Lấy tên giao diện mạng
+INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
 
 # Khai báo các hàm cần thiết
 random() {
@@ -65,9 +68,11 @@ install_3proxy() {
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp scripts/init.d/3proxy /etc/init.d/3proxy
-    chmod +x /etc/init.d/3proxy
-    chkconfig 3proxy on
+    cp scripts/3proxy.cfg /usr/local/etc/3proxy/
+    # Sao chép tệp unit systemd cho 3proxy
+    cp scripts/systemd/3proxy.service /etc/systemd/system/3proxy.service
+    systemctl daemon-reload
+    systemctl enable 3proxy.service
     cd $WORKDIR
 }
 
@@ -115,13 +120,13 @@ gen_data() {
 
 gen_iptables() {
     cat <<EOF
-$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA})
+$(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -j ACCEPT"}' ${WORKDATA})
 EOF
 }
 
 gen_ifconfig() {
     cat <<EOF
-$(awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' ${WORKDATA})
+$(awk -F "/" -v interface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " interface}' ${WORKDATA})
 EOF
 }
 
@@ -159,15 +164,17 @@ chmod +x ${WORKDIR}/boot_*.sh
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
 # Cập nhật /etc/rc.local để chạy các script khởi động
-cat >>/etc/rc.local <<EOF
+cat > /etc/rc.local <<EOF
+#!/bin/bash
 bash ${WORKDIR}/boot_iptables.sh
 bash ${WORKDIR}/boot_ifconfig.sh
 ulimit -n 10048
-service 3proxy start
+systemctl start 3proxy.service
 EOF
 
-# Chạy /etc/rc.local ngay lập tức
-bash /etc/rc.local
+chmod +x /etc/rc.local
+systemctl enable rc-local
+systemctl start rc-local
 
 # Tạo tệp proxy cho người dùng
 gen_proxy_file_for_user
