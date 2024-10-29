@@ -52,14 +52,6 @@ random() {
     echo
 }
 
-array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
-gen64() {
-    ip64() {
-        echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
-    }
-    echo "$1:$(ip64):$(ip64):$(ip64):$(ip64)"
-}
-
 install_3proxy() {
     echo "Đang cài đặt 3proxy..."
     URL="https://github.com/z3APA3A/3proxy/archive/refs/tags/0.8.13.tar.gz"
@@ -91,7 +83,7 @@ users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
 
 $(awk -F "/" '{print "auth strong\n" \
 "allow " $1 "\n" \
-"proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
+"proxy -n -a -p" $4 " -i" $3 "\n" \
 "flush\n"}' ${WORKDATA})
 EOF
 }
@@ -114,19 +106,13 @@ upload_proxy() {
 
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+        echo "usr$(random)/pass$(random)/$IP4/$port"
     done
 }
 
 gen_iptables() {
     cat <<EOF
 $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -j ACCEPT"}' ${WORKDATA})
-EOF
-}
-
-gen_ifconfig() {
-    cat <<EOF
-$(awk -F "/" -v interface="$INTERFACE" '{print "ip -6 addr add " $5 "/64 dev " interface}' ${WORKDATA})
 EOF
 }
 
@@ -142,11 +128,11 @@ if [ ! -f /etc/rc.local ]; then
     chmod +x /etc/rc.local
 fi
 
-# Lấy địa chỉ IP4 và IP6
+# Lấy địa chỉ IP4
 IP4=$(curl -4 -s icanhazip.com)
-IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+IP6=""
 
-echo "IP nội bộ = ${IP4}. Subnet ngoài cho IP6 = ${IP6}"
+echo "IP nội bộ = ${IP4}"
 
 # Yêu cầu người dùng nhập số lượng proxy cần tạo
 echo "Bạn muốn tạo bao nhiêu proxy? Ví dụ 500"
@@ -158,7 +144,6 @@ LAST_PORT=$(($FIRST_PORT + $COUNT - 1))
 # Gọi các hàm để tạo dữ liệu và cấu hình
 gen_data >$WORKDATA
 gen_iptables >$WORKDIR/boot_iptables.sh
-gen_ifconfig >$WORKDIR/boot_ifconfig.sh
 chmod +x ${WORKDIR}/boot_*.sh
 
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
@@ -167,7 +152,6 @@ gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 cat > /etc/rc.local <<EOF
 #!/bin/bash
 bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
 ulimit -n 10048
 systemctl start 3proxy.service
 EOF
