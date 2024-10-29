@@ -12,6 +12,7 @@ yum clean all
 yum makecache
 yum -y install epel-release
 yum -y install net-tools tar zip curl wget gcc make
+yum -y groupinstall "Development Tools"
 
 # Lấy tên giao diện mạng
 INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
@@ -27,7 +28,7 @@ if [[ $IP4 == 192.168.* || $IP4 == 10.* || $IP4 == 172.16.* || $IP4 == 172.31.* 
 fi
 
 # Lấy địa chỉ IPv6
-IP6=$(ip -6 addr show dev $INTERFACE | grep -v "fe80" | grep "scope global" | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+IP6=$(ip -6 addr show dev $INTERFACE scope global | grep inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n1)
 if [ -z "$IP6" ]; then
     echo "Không tìm thấy địa chỉ IPv6 trên giao diện $INTERFACE."
     USE_IPV6=false
@@ -61,7 +62,7 @@ install_3proxy() {
     wget $URL -O 3proxy-0.9.4.tar.gz
     tar -xzf 3proxy-0.9.4.tar.gz
     cd 3proxy-0.9.4
-    make
+    make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
     cp src/3proxy /usr/local/etc/3proxy/bin/
     cp cfg/3proxy.cfg.sample /usr/local/etc/3proxy/3proxy.cfg
